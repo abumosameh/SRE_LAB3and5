@@ -50,3 +50,4 @@ We use **AWS Systems Manager (SSM) Parameter Store**.
 4.  Verify:
     * Visit the Public IP of the created EC2 instance in your browser.
     * You should see a success message indicating the secret was retrieved.
+-Thanks, -Anas 
