@@ -1,8 +1,5 @@
 # --- Secret Management ---
-resource "random_password" "db_password" {
-  length  = 16
-  special = false
-}
+# Note: "random_password" resource removed as we now use var.db_password for consistency across RDS and App.
 
 resource "aws_ssm_parameter" "db_password" {
   name        = "/${local.config.app_name}/database/password"
