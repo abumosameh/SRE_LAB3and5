@@ -15,3 +15,19 @@ variable "iam_instance_profile" {
   type        = string
   default     = "LabInstanceProfile"
 }
+
+# --- New Variables for Part 3 ---
+variable "db_username" {
+  description = "Database administrator username"
+  type        = string
+  default     = "admin"
+  sensitive   = true
+}
+
+variable "db_password" {
+  description = "Database administrator password"
+  type        = string
+  # Default value removed for security.
+  # Set this value in terraform.tfvars or via env var TF_VAR_db_password
+  sensitive = true
+}
