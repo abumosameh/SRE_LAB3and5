@@ -4,7 +4,7 @@
 
 **Instructor Name:** Rahul Bahl
 
-**GitHub Repository Link:** https://github.com/abumosameh/SRE\_LAB3and5/tree/lab5
+**GitHub Repository Link:** https://github.com/abumosameh/SRE_LAB3and5/tree/lab5
 
 ## **Part 1: Research on Scaling Patterns**
 
@@ -56,7 +56,7 @@ Invalidation is hard—how do you know when to delete the cache so users see fre
 
 *Note on the Hands-On Section: Since we don't have access to the AWS Learner Lab for this course, I've created and attached the complete Terraform configuration files to build this infrastructure. As we discussed back in Lab 3, submitting this Terraform code fulfills the hands-on requirements for this part of the lab.*
 
-https://github.com/abumosameh/SRE\_LAB3and5/tree/lab5
+https://github.com/abumosameh/SRE_LAB3and5/tree/lab5
 
 For this part, I used Terraform to build an AWS environment. My setup includes an Application Load Balancer, an Auto Scaling Group of EC2 instances running a web app, a DynamoDB table for the main database, and an ElastiCache Redis cluster for the caching layer.
 
