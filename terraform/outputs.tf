@@ -1,24 +1,14 @@
-output "alb_dns_name" {
-  description = "The DNS name of the load balancer"
-  value       = aws_lb.app_lb.dns_name
+output "load_balancer_dns" {
+  description = "The DNS name of the application load balancer. Use this URL to access your web application."
+  value       = aws_lb.lab_alb.dns_name
 }
 
-output "asg_name" {
-  description = "The name of the Auto Scaling Group"
-  value       = aws_autoscaling_group.web_asg.name
+output "redis_endpoint" {
+  description = "The endpoint URL for your ElastiCache Redis cluster."
+  value       = aws_elasticache_cluster.redis_cache.cache_nodes[0].address
 }
 
-# --- Part 3 Outputs ---
-output "db_primary_endpoint" {
-  description = "Primary RDS Endpoint"
-  value       = aws_db_instance.default.address
-}
-
-output "db_replica_endpoint" {
-  description = "Read Replica RDS Endpoint"
-  value       = aws_db_instance.replica.address
-}
-
-output "audit_bucket_name" {
-  value = aws_s3_bucket.audit_logs.id
+output "dynamodb_table_name" {
+  description = "The name of the DynamoDB table."
+  value       = aws_dynamodb_table.lab_database.name
 }

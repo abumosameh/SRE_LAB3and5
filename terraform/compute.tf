@@ -1,206 +1,214 @@
-# --- Secret Management ---
-# Note: "random_password" resource removed as we now use var.db_password for consistency across RDS and App.
+# ------------------------------------------------------------------------------
+# SECURITY GROUPS
+# ------------------------------------------------------------------------------
+resource "aws_security_group" "alb_sg" {
+  name        = "lab5-alb-sg"
+  description = "Allow HTTP traffic from the internet"
+  vpc_id      = aws_vpc.lab_vpc.id
 
-resource "aws_ssm_parameter" "db_password" {
-  name        = "/${local.config.app_name}/database/password"
-  description = "The database password for the web app"
-  type        = "SecureString"
-  value       = var.db_password
-  tags        = local.common_tags
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 }
 
-# --- Launch Template ---
-data "aws_ami" "amazon_linux" {
+resource "aws_security_group" "ec2_sg" {
+  name        = "lab5-ec2-sg"
+  description = "Allow HTTP from ALB and SSH"
+  vpc_id      = aws_vpc.lab_vpc.id
+
+  ingress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "redis_sg" {
+  name        = "lab5-redis-sg"
+  description = "Allow Redis traffic from EC2"
+  vpc_id      = aws_vpc.lab_vpc.id
+
+  ingress {
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [aws_security_group.ec2_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# ------------------------------------------------------------------------------
+# LOAD BALANCER
+# ------------------------------------------------------------------------------
+resource "aws_lb" "lab_alb" {
+  name               = "lab5-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb_sg.id]
+  subnets            = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+}
+
+resource "aws_lb_target_group" "lab_tg" {
+  name     = "lab5-tg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.lab_vpc.id
+
+  health_check {
+    path                = "/"
+    healthy_threshold   = 2
+    unhealthy_threshold = 10
+  }
+}
+
+resource "aws_lb_listener" "front_end" {
+  load_balancer_arn = aws_lb.lab_alb.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.lab_tg.arn
+  }
+}
+
+# ------------------------------------------------------------------------------
+# LAUNCH TEMPLATE & AUTO SCALING GROUP (Bonus)
+# ------------------------------------------------------------------------------
+data "aws_ami" "amazon_linux_2023" {
   most_recent = true
   owners      = ["amazon"]
   filter {
     name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+    values = ["al2023-ami-2023.*-x86_64"]
   }
 }
 
-resource "aws_launch_template" "web_server" {
-  name_prefix   = "${local.config.app_name}-lt-"
-  image_id      = data.aws_ami.amazon_linux.id
-  instance_type = local.config.instance_type
+resource "aws_launch_template" "lab_lt" {
+  name_prefix   = "lab5-app-"
+  image_id      = data.aws_ami.amazon_linux_2023.id
+  instance_type = "t2.micro"
 
-  vpc_security_group_ids = [aws_security_group.web_sg.id]
+  vpc_security_group_ids = [aws_security_group.ec2_sg.id]
 
+  # IAM Profile (AWS Academy uses LabInstanceProfile by default)
   iam_instance_profile {
-    name = var.iam_instance_profile
+    name = var.iam_instance_profile_name
   }
 
-  # UPDATED USER DATA: robust variable injection using db_config.php
   user_data = base64encode(<<-EOF
               #!/bin/bash
-
-              # 1. Install Dependencies (Stable PHP 7.4)
-              yum update -y
-              amazon-linux-extras enable php7.4
-              yum clean metadata
-              yum install -y httpd php php-cli php-mysqlnd jq
-
+              dnf update -y
+              dnf install -y python3 python3-pip httpd
+              pip3 install flask redis boto3
+              
+              # Provide Redis endpoint and DynamoDB table name to application environment
+              echo "export REDIS_HOST='${aws_elasticache_cluster.redis_cache.cache_nodes[0].address}'" >> /etc/profile
+              echo "export DYNAMO_TABLE='${aws_dynamodb_table.lab_database.name}'" >> /etc/profile
+              
+              # A placeholder file letting you know it works
+              echo "<h1>Lab 5 Application Server Running</h1><p>Ready for cache implementation.</p>" > /var/www/html/index.html
+              
               systemctl start httpd
               systemctl enable httpd
-
-              # 2. Write Database Configuration File
-              # We use a standard heredoc (CONFIG) so we can inject Terraform variables.
-              # We escape the $ signs for PHP variables (\$host) so Bash doesn't try to expand them.
-              cat <<CONFIG > /var/www/html/db_config.php
-              <?php
-              \$db_host = "${aws_db_instance.default.address}";
-              \$db_user = "${var.db_username}";
-              \$db_pass = "${var.db_password}";
-              \$db_name = "lab_app";
-              ?>
-              CONFIG
-
-              # 3. Create Application File (index.php)
-              # We use a QUOTED heredoc ('PHP') so Bash ignores everything inside.
-              # This protects the PHP logic variables like $conn, $result, etc.
-              cat << 'PHP' > /var/www/html/index.php
-              <?php
-              // Enable Error Reporting
-              ini_set('display_errors', 1);
-              ini_set('display_startup_errors', 1);
-              error_reporting(E_ALL);
-
-              // Import the configuration we just wrote
-              require 'db_config.php';
-
-              // Retry Logic
-              $max_retries = 5;
-              $attempt = 0;
-              $conn = null;
-
-              while ($attempt < $max_retries) {
-                  // Suppress warnings with @ to handle connection errors manually
-                  $conn = @new mysqli($db_host, $db_user, $db_pass);
-                  if ($conn->connect_error) {
-                      $attempt++;
-                      sleep(2);
-                      continue;
-                  }
-                  break;
-              }
-
-              if (!$conn || $conn->connect_error) {
-                  http_response_code(503);
-                  echo "<h1>Service Unavailable</h1>";
-                  echo "<p>Database connection failed: " . ($conn ? $conn->connect_error : "Unknown error") . "</p>";
-                  echo "<p>Host: $db_host | User: $db_user</p>";
-                  exit();
-              }
-
-              // Database Setup
-              $conn->query("CREATE DATABASE IF NOT EXISTS $db_name");
-              $conn->select_db($db_name);
-
-              $sql = "CREATE TABLE IF NOT EXISTS feature_toggles (
-                  id INT(6) UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                  feature_name VARCHAR(30) NOT NULL UNIQUE,
-                  is_enabled BOOLEAN DEFAULT FALSE
-              )";
-              $conn->query($sql);
-
-              $conn->query("INSERT IGNORE INTO feature_toggles (feature_name, is_enabled) VALUES ('dark_mode', 1)");
-
-              $result = $conn->query("SELECT is_enabled FROM feature_toggles WHERE feature_name = 'dark_mode'");
-              $row = $result->fetch_assoc();
-              $darkMode = $row['is_enabled'];
-
-              $bg_color = $darkMode ? "#333" : "#fff";
-              $text_color = $darkMode ? "#fff" : "#000";
-              ?>
-
-              <!DOCTYPE html>
-              <html>
-              <head>
-                  <style>
-                      body { background-color: <?php echo $bg_color; ?>; color: <?php echo $text_color; ?>; font-family: sans-serif; padding: 2rem; }
-                      .card { border: 1px solid #ccc; padding: 20px; border-radius: 8px; }
-                  </style>
-              </head>
-              <body>
-                  <h1>Lab App Part 3: Database Connected</h1>
-                  <div class="card">
-                      <h3>Database Status</h3>
-                      <p><strong>Connection:</strong> Success (Primary)</p>
-                      <p><strong>Host:</strong> <?php echo $db_host; ?></p>
-                  </div>
-
-                  <div class="card" style="margin-top: 20px;">
-                      <h3>Feature Toggle Demo</h3>
-                      <p>Feature: <strong>Dark Mode</strong></p>
-                      <p>Status: <strong><?php echo $darkMode ? "Enabled" : "Disabled"; ?></strong></p>
-                  </div>
-              </body>
-              </html>
-              PHP
-
-              # 4. Create Health Check
-              echo '{"status": "healthy"}' > /var/www/html/health
-
-              # 5. Graceful Shutdown Script
-              cat << 'SCRIPT' > /usr/local/bin/graceful_shutdown.sh
-              #!/bin/bash
-              echo "Graceful shutdown triggered..." >> /var/log/shutdown.log
-              sleep 10
-              INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-              ASG_NAME=$(aws autoscaling describe-auto-scaling-instances --instance-ids $INSTANCE_ID --region ${var.region} --query 'AutoScalingInstances[0].AutoScalingGroupName' --output text)
-              aws autoscaling complete-lifecycle-action \
-                --lifecycle-hook-name ${local.config.app_name}-termination-hook \
-                --auto-scaling-group-name $ASG_NAME \
-                --lifecycle-action-result CONTINUE \
-                --instance-id $INSTANCE_ID \
-                --region ${var.region}
-              SCRIPT
-              chmod +x /usr/local/bin/graceful_shutdown.sh
               EOF
   )
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = merge(local.common_tags, {
-      Name = "${local.config.app_name}-asg-node"
-    })
-  }
 }
 
-# --- Auto Scaling Group ---
-resource "aws_autoscaling_group" "web_asg" {
-  name                = "${local.config.app_name}-asg"
-  vpc_zone_identifier = [aws_subnet.public.id, aws_subnet.public_2.id]
-  target_group_arns   = [aws_lb_target_group.app_tg.arn]
-  health_check_type   = "ELB"
-  health_check_grace_period = 300
-  min_size         = local.config.asg_min_size
-  max_size         = local.config.asg_max_size
-  desired_capacity = local.config.asg_desired_capacity
+resource "aws_autoscaling_group" "lab_asg" {
+  name                = "lab5-asg"
+  vpc_zone_identifier = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+  target_group_arns   = [aws_lb_target_group.lab_tg.arn]
+  
+  desired_capacity = 2
+  min_size         = 1
+  max_size         = 4
+
   launch_template {
-    id      = aws_launch_template.web_server.id
+    id      = aws_launch_template.lab_lt.id
     version = "$Latest"
   }
+
   tag {
-    key = "Name"
-    value = "${local.config.app_name}-asg-instance"
+    key                 = "Name"
+    value               = "Lab5-App-Instance"
     propagate_at_launch = true
-  }
-  dynamic "tag" {
-    for_each = local.common_tags
-    content {
-      key                 = tag.key
-      value               = tag.value
-      propagate_at_launch = true
-    }
   }
 }
 
-# --- Lifecycle Hook ---
-resource "aws_autoscaling_lifecycle_hook" "termination_hook" {
-  name                   = "${local.config.app_name}-termination-hook"
-  autoscaling_group_name = aws_autoscaling_group.web_asg.name
-  default_result         = "CONTINUE"
-  heartbeat_timeout      = 300
-  lifecycle_transition   = "autoscaling:EC2_INSTANCE_TERMINATING"
+# ------------------------------------------------------------------------------
+# CLOUDWATCH ALARMS & SCALING POLICIES (Bonus Part)
+# ------------------------------------------------------------------------------
+resource "aws_autoscaling_policy" "scale_up" {
+  name                   = "lab5-scale-up"
+  scaling_adjustment     = 1
+  adjustment_type        = "ChangeInCapacity"
+  cooldown               = 300
+  autoscaling_group_name = aws_autoscaling_group.lab_asg.name
+}
+
+resource "aws_cloudwatch_metric_alarm" "high_cpu_alarm" {
+  alarm_name          = "lab5-high-cpu"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = "120"
+  statistic           = "Average"
+  threshold           = "70"
+  alarm_description   = "Triggers scale up when CPU is high (Lab 5 Bonus)"
+  alarm_actions       = [aws_autoscaling_policy.scale_up.arn]
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.lab_asg.name
+  }
+}
+
+resource "aws_autoscaling_policy" "scale_down" {
+  name                   = "lab5-scale-down"
+  scaling_adjustment     = -1
+  adjustment_type        = "ChangeInCapacity"
+  cooldown               = 300
+  autoscaling_group_name = aws_autoscaling_group.lab_asg.name
+}
+
+resource "aws_cloudwatch_metric_alarm" "low_cpu_alarm" {
+  alarm_name          = "lab5-low-cpu"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = "2"
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/EC2"
+  period              = "120"
+  statistic           = "Average"
+  threshold           = "30"
+  alarm_description   = "Triggers scale down when CPU is low (Lab 5 Bonus)"
+  alarm_actions       = [aws_autoscaling_policy.scale_down.arn]
+
+  dimensions = {
+    AutoScalingGroupName = aws_autoscaling_group.lab_asg.name
+  }
 }

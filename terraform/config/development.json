@@ -1,8 +1,0 @@
-{
-    "instance_type": "t3.micro",
-    "app_name": "lab-app-dev",
-    "tags": {
-        "Environment": "Development",
-        "Project": "IaC-Lab-Part1"
-    }
-}

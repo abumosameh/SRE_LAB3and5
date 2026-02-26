@@ -1,29 +1,77 @@
+# ------------------------------------------------------------------------------
+# PROVIDER & DATA SOURCES
+# ------------------------------------------------------------------------------
 provider "aws" {
-  region = var.region
+  region = var.aws_region
 }
 
-# --- Layered Configuration Logic ---
-locals {
-  # 1. Load the Default Configuration
-  default_config = jsondecode(file("${path.module}/config/default.json"))
-
-  # 2. Load the Environment Specific Configuration (if environment matches)
-  #    Workaround for "Inconsistent conditional result types" error:
-  #    Instead of a ternary returning an object or empty map (which have different types),
-  #    we create a list that contains the decoded object if the environment matches,
-  #    or an empty list if it doesn't.
-  env_config_list = var.environment == "development" ? [jsondecode(file("${path.module}/config/development.json"))] : []
-
-  # 3. Merge Layers: Defaults <- Overridden by Env Config
-  #    We use the expansion operator (...) to merge the list elements if they exist.
-  config = merge(local.default_config, local.env_config_list...)
-
-  # Common tags merged with config specific tags
-  common_tags = merge({
-    ManagedBy = "Terraform"
-  }, lookup(local.config, "tags", {}))
-}
-
+# Fetch availability zones
 data "aws_availability_zones" "available" {
   state = "available"
+}
+
+# ------------------------------------------------------------------------------
+# NETWORKING (VPC, Subnets, IGW, Routing)
+# ------------------------------------------------------------------------------
+resource "aws_vpc" "lab_vpc" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name = "Lab5-Scaling-VPC"
+  }
+}
+
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.lab_vpc.id
+
+  tags = {
+    Name = "Lab5-IGW"
+  }
+}
+
+resource "aws_subnet" "public_1" {
+  vpc_id                  = aws_vpc.lab_vpc.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "Lab5-Public-Subnet-1"
+  }
+}
+
+resource "aws_subnet" "public_2" {
+  vpc_id                  = aws_vpc.lab_vpc.id
+  cidr_block              = "10.0.2.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[1]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "Lab5-Public-Subnet-2"
+  }
+}
+
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.lab_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
+  }
+
+  tags = {
+    Name = "Lab5-Public-Route-Table"
+  }
+}
+
+resource "aws_route_table_association" "public_1_assoc" {
+  subnet_id      = aws_subnet.public_1.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+resource "aws_route_table_association" "public_2_assoc" {
+  subnet_id      = aws_subnet.public_2.id
+  route_table_id = aws_route_table.public_rt.id
 }
